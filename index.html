@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Asterisk JS</title>
+  <style>
+    body {
+      background: #000;
+      color: #fff;
+      font-family: 'Courier New', Courier, monospace;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start;
+      height: 100vh;
+    }
+    #game {
+      border: 2px solid #fff;
+      margin-top: 24px;
+      background: #000;
+      display: block;
+    }
+    #ui {
+      margin-top: 12px;
+      width: 320px;
+      display: flex;
+      justify-content: space-between;
+      font-size: 16px;
+    }
+    #record {
+      text-align: right;
+      flex: 1;
+    }
+    #level {
+      text-align: left;
+      flex: 1;
+    }
+    #instructions {
+      margin-top: 8px;
+      color: #ff0;
+      font-size: 14px;
+      width: 320px;
+      text-align: center;
+    }
+    #startBtn {
+      margin-top: 16px;
+      padding: 8px 24px;
+      font-size: 16px;
+      background: #eee;
+      color: #222;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    #startBtn:disabled {
+      background: #888;
+      color: #444;
+      cursor: not-allowed;
+    }
+  </style>
+</head>
+<body>
+  <div id="ui">
+    <div id="level">Level 1</div>
+    <div id="record">Record: Level 1 by nobody</div>
+  </div>
+  <div id="instructions">Press Enter to rise, release to fall</div>
+  <canvas id="game" width="300" height="200"></canvas>
+  <button id="startBtn">Start Game</button>
+  <script>
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+    const levelLabel = document.getElementById('level');
+    const recordLabel = document.getElementById('record');
+    const startBtn = document.getElementById('startBtn');
+    const instructions = document.getElementById('instructions');
+
+    // Game constants
+    const WIDTH = 300;
+    const HEIGHT = 200;
+    const PLAYER_COLOR = '#ff0';
+    const OBSTACLE_COLOR = '#fff';
+    const PLAYER_SIZE = 2;
+    const OBSTACLE_SIZE = 2;
+    const PLAYER_START_Y = HEIGHT / 2;
+    const PLAYER_X = 10;
+    const GRAVITY = 1.2;
+    const RISE = -2.2;
+    const TICK = 20; // ms
+    const OBSTACLE_GAP = 40;
+    const OBSTACLE_MIN = 20;
+    const OBSTACLE_MAX = HEIGHT - 20;
+    const OBSTACLE_WIDTH = OBSTACLE_SIZE;
+    const OBSTACLE_HEIGHT = OBSTACLE_SIZE;
+
+    // Game state
+    let running = false;
+    let level = 1;
+    let recordLevel = 1;
+    let recordName = 'nobody';
+    let playerY = PLAYER_START_Y;
+    let playerVY = 0;
+    let obstacles = [];
+    let tickCount = 0;
+    let crashed = false;
+    let keyDown = false;
+    let namePromptActive = false;
+
+    // Load record from localStorage
+    function loadRecord() {
+      recordLevel = parseInt(localStorage.getItem('asterisk_recordLevel') || '1', 10);
+      recordName = localStorage.getItem('asterisk_recordName') || 'nobody';
+      updateRecordLabel();
+    }
+
+    function saveRecord() {
+      localStorage.setItem('asterisk_recordLevel', recordLevel);
+      localStorage.setItem('asterisk_recordName', recordName);
+      updateRecordLabel();
+    }
+
+    function updateRecordLabel() {
+      recordLabel.textContent = `Record: Level ${recordLevel} by ${recordName}`;
+    }
+
+    function updateLevelLabel() {
+      levelLabel.textContent = `Level ${level}`;
+    }
+
+    function resetPlayer() {
+      playerY = PLAYER_START_Y;
+      playerVY = 0;
+    }
+
+    function resetObstacles() {
+      obstacles = [];
+      let nAsterisks = level * 3;
+      for (let i = 0; i < nAsterisks; i++) {
+        let x = Math.floor(Math.random() * (WIDTH - 40)) + 20;
+        let y = Math.floor(Math.random() * (HEIGHT - 10));
+        obstacles.push({ x, y });
+      }
+    }
+
+    function draw() {
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, WIDTH, HEIGHT);
+      // Border
+      ctx.strokeStyle = '#fff';
+      ctx.strokeRect(0, 0, WIDTH, HEIGHT);
+      // Obstacles
+      ctx.fillStyle = OBSTACLE_COLOR;
+      for (const obs of obstacles) {
+        ctx.fillRect(obs.x, obs.y, OBSTACLE_WIDTH, OBSTACLE_HEIGHT);
+      }
+      // Player
+      ctx.fillStyle = PLAYER_COLOR;
+      ctx.fillRect(PLAYER_X, Math.round(playerY), PLAYER_SIZE, PLAYER_SIZE);
+    }
+
+    function checkCollision() {
+      // Out of bounds
+      if (playerY < 0 || playerY > HEIGHT - PLAYER_SIZE) return true;
+      // Collision with obstacles
+      for (const obs of obstacles) {
+        if (
+          PLAYER_X < obs.x + OBSTACLE_WIDTH &&
+          PLAYER_X + PLAYER_SIZE > obs.x &&
+          playerY < obs.y + OBSTACLE_HEIGHT &&
+          playerY + PLAYER_SIZE > obs.y
+        ) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    function nextLevel() {
+      level++;
+      updateLevelLabel();
+      resetPlayer();
+      resetObstacles();
+      tickCount = 0;
+    }
+
+    function gameOver() {
+      running = false;
+      crashed = true;
+      startBtn.disabled = false;
+      instructions.textContent = 'Game Over! Press Start to play again.';
+      if (level > recordLevel) {
+        setTimeout(() => {
+          let name = prompt('High Score! Enter your name:', recordName);
+          if (name && name.trim()) {
+            recordName = name.trim();
+          }
+          recordLevel = level;
+          saveRecord();
+        }, 100);
+      }
+    }
+
+    function gameTick() {
+      if (!running) return;
+      tickCount++;
+      // Move player
+      if (keyDown) {
+        playerVY = RISE;
+      } else {
+        playerVY = GRAVITY;
+      }
+      playerY += playerVY;
+      // Move obstacles left
+      for (const obs of obstacles) {
+        obs.x -= 1 + Math.floor(level / 3); // speed up per level
+      }
+      // Remove off-screen obstacles
+      obstacles = obstacles.filter(obs => obs.x + OBSTACLE_WIDTH > 0);
+      // Add new obstacles
+      if (tickCount % Math.max(OBSTACLE_GAP - level * 2, 18) === 0) {
+        let y = Math.floor(Math.random() * (HEIGHT - 10));
+        obstacles.push({ x: WIDTH - OBSTACLE_WIDTH, y });
+      }
+      // Check collision
+      if (checkCollision()) {
+        gameOver();
+        draw();
+        return;
+      }
+      // Level up if player reaches right edge
+      if (PLAYER_X >= WIDTH - PLAYER_SIZE - 2) {
+        nextLevel();
+      }
+      draw();
+      requestAnimationFrame(gameTick);
+    }
+
+    function startGame() {
+      running = true;
+      crashed = false;
+      level = 1;
+      updateLevelLabel();
+      resetPlayer();
+      resetObstacles();
+      tickCount = 0;
+      instructions.textContent = 'Press Enter to rise, release to fall';
+      startBtn.disabled = true;
+      draw();
+      requestAnimationFrame(gameTick);
+    }
+
+    // Input
+    document.addEventListener('keydown', (e) => {
+      if (e.code === 'Enter') {
+        keyDown = true;
+        e.preventDefault();
+      }
+    });
+    document.addEventListener('keyup', (e) => {
+      if (e.code === 'Enter') {
+        keyDown = false;
+        e.preventDefault();
+      }
+    });
+    startBtn.addEventListener('click', startGame);
+
+    // Init
+    loadRecord();
+    draw();
+  </script>
+</body>
+</html>
