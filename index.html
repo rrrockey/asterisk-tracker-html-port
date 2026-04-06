@@ -52,8 +52,30 @@
       top: 0; left: 0;
       display: block;
     }
-    #startBtn {
+    #countdownOverlay {
+      position: absolute;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      font-size: 72px;
+      font-weight: 700;
+      color: #fff;
+      text-shadow: 0 0 16px rgba(255,255,255,0.35);
+      background: rgba(0,0,0,0.20);
+      user-select: none;
+      pointer-events: none;
+    }
+    #startRow {
       margin-top: 14px;
+      width: 400px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    #startBtn {
       padding: 8px 24px;
       font-size: 16px;
       background: #eee;
@@ -67,6 +89,35 @@
       color: #888;
       cursor: not-allowed;
     }
+    #startDifficulty {
+      padding: 8px 10px;
+      font-size: 14px;
+      border-radius: 4px;
+      border: 1px solid #666;
+      background: #111;
+      color: #fff;
+      outline: none;
+    }
+    #startDifficulty:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+    #startDifficultyLabel {
+      font-size: 12px;
+      color: #bbb;
+      user-select: none;
+    }
+    #countdownToggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: #bbb;
+      user-select: none;
+    }
+    #countdownToggle input {
+      transform: translateY(1px);
+    }
   </style>
 </head>
 <body>
@@ -79,8 +130,24 @@
   <div id="canvasWrapper">
     <canvas id="trailCanvas" width="400" height="220"></canvas>
     <canvas id="gameCanvas"  width="400" height="220"></canvas>
+    <div id="countdownOverlay">3</div>
   </div>
-  <button id="startBtn">Start Game</button>
+
+  <div id="startRow">
+    <span id="startDifficultyLabel">Start:</span>
+    <select id="startDifficulty" aria-label="Starting difficulty">
+      <option value="easy" selected>Easy</option>
+      <option value="medium">Medium</option>
+      <option value="hard">Hard</option>
+    </select>
+
+    <label id="countdownToggle" title="Show a 3-2-1 countdown before starting">
+      <input id="countdownEnabled" type="checkbox" checked>
+      3-second countdown
+    </label>
+
+    <button id="startBtn">Start Game</button>
+  </div>
 
   <script>
     const trailCanvas = document.getElementById('trailCanvas');
@@ -93,12 +160,21 @@
     const startBtn     = document.getElementById('startBtn');
     const instructions = document.getElementById('instructions');
     const difficultyEl = document.getElementById('difficulty');
+    const startDifficulty = document.getElementById('startDifficulty');
+
+    const countdownEnabledEl = document.getElementById('countdownEnabled');
+    const countdownOverlay = document.getElementById('countdownOverlay');
 
     const W = 400, H = 220;
     const PLAYER_R = 3;
 
     const BASE_SPEED   = 1.3;
     const BASE_VERT    = 1.8; // constant vertical speed (up or down)
+
+    // Obstacles are now a 2x2 cluster of asterisks.
+    // We treat each obstacle as a small square for collision, and render 4 "*" glyphs.
+    const OB_GLYPH_SPACING = 8;   // px between glyph centers in the 2x2 cluster
+    const OB_HALF_EXTENT   = 6;   // half-size (px) of the collision square around obstacle center
 
     const TIERS = [
       { min: 1,  max: 3,  label: 'Easy',      color: '#4f4' },
@@ -108,6 +184,12 @@
       { min: 19, max: 99, label: 'INSANE',    color: '#f0f' },
     ];
 
+    const START_LEVELS = {
+      easy: 1,
+      medium: 4,
+      hard: 8,
+    };
+
     let running = false;
     let level = 1, recordLevel = 1, recordName = 'nobody';
     let playerX = 0, playerY = H / 2, playerVY = 0;
@@ -115,6 +197,10 @@
     let obstacles = [];
     let keyDown = false;
     let animId = null;
+
+    // Countdown state
+    let countdownTimer = null;
+    let starting = false;
 
     // --- Scaling ---
     const speed   = lvl => BASE_SPEED + (lvl - 1) * 0.12;
@@ -140,16 +226,48 @@
       difficultyEl.textContent = running ? t.label : '';
     }
 
+    function getSelectedStartLevel() {
+      const key = (startDifficulty?.value || 'easy').toLowerCase();
+      return START_LEVELS[key] ?? 1;
+    }
+
+    function isCountdownEnabled() {
+      return !!countdownEnabledEl?.checked;
+    }
+
+    function showCountdown(val) {
+      countdownOverlay.textContent = String(val);
+      countdownOverlay.style.display = 'flex';
+    }
+
+    function hideCountdown() {
+      countdownOverlay.style.display = 'none';
+    }
+
+    function cancelCountdown() {
+      if (countdownTimer) {
+        clearInterval(countdownTimer);
+        countdownTimer = null;
+      }
+      starting = false;
+      hideCountdown();
+    }
+
     // --- Obstacles ---
-    // Place asterisks randomly, avoiding a safe corridor at the very start.
+    // Place obstacle centers randomly, avoiding a safe corridor at the very start.
     function placeObstacles(lvl) {
       obstacles = [];
       const count   = nObs(lvl);
       const safeEnd = 44; // px from left edge that's kept clear
       const placed  = [];
+
+      // Keep centers away from edges so the 2x2 cluster stays on-canvas.
+      const padX = Math.max(OB_HALF_EXTENT, OB_GLYPH_SPACING / 2) + 2;
+      const padY = Math.max(OB_HALF_EXTENT, OB_GLYPH_SPACING / 2) + 2;
+
       for (let attempt = 0; attempt < count * 10 && placed.length < count; attempt++) {
-        const x = Math.random() * (W - safeEnd - 12) + safeEnd + 6;
-        const y = Math.random() * (H - 20) + 10;
+        const x = Math.random() * (W - safeEnd - padX * 2) + safeEnd + padX;
+        const y = Math.random() * (H - padY * 2) + padY;
         if (!placed.some(p => Math.hypot(p.x - x, p.y - y) < 20))
           placed.push({ x, y });
       }
@@ -195,14 +313,21 @@
       gc.fillStyle = trailColor(level);
       gc.fillRect(0, 0, W * pct, 3);
 
-      // Asterisks
+      // Asterisks (2x2)
       gc.fillStyle    = '#fff';
       gc.font         = '10px Courier New';
       gc.textAlign    = 'center';
       gc.textBaseline = 'middle';
       gc.shadowColor  = '#888';
       gc.shadowBlur   = 4;
-      for (const o of obstacles) gc.fillText('*', o.x, o.y);
+
+      const d = OB_GLYPH_SPACING / 2;
+      for (const o of obstacles) {
+        gc.fillText('*', o.x - d, o.y - d);
+        gc.fillText('*', o.x + d, o.y - d);
+        gc.fillText('*', o.x - d, o.y + d);
+        gc.fillText('*', o.x + d, o.y + d);
+      }
       gc.shadowBlur = 0;
 
       // Player
@@ -218,8 +343,13 @@
     // --- Collision ---
     function collides() {
       if (playerY - PLAYER_R < 0 || playerY + PLAYER_R > H) return true;
-      for (const o of obstacles)
-        if (Math.hypot(playerX - o.x, playerY - o.y) < PLAYER_R + 5) return true;
+
+      // Circle (player) vs AABB (obstacle cluster square)
+      for (const o of obstacles) {
+        const dx = Math.max(Math.abs(playerX - o.x) - OB_HALF_EXTENT, 0);
+        const dy = Math.max(Math.abs(playerY - o.y) - OB_HALF_EXTENT, 0);
+        if (dx * dx + dy * dy < PLAYER_R * PLAYER_R) return true;
+      }
       return false;
     }
 
@@ -241,7 +371,10 @@
     // --- Game over ---
     function gameOver() {
       running = false;
+      cancelCountdown();
       startBtn.disabled = false;
+      startDifficulty.disabled = false;
+      countdownEnabledEl.disabled = false;
       difficultyEl.textContent = '';
       instructions.textContent = 'Game Over! Press Start to play again.';
       if (level > recordLevel) {
@@ -287,21 +420,64 @@
       animId = requestAnimationFrame(tick);
     }
 
+    function beginRun() {
+      running = true;
+      starting = false;
+      hideCountdown();
+
+      const t = tier(level);
+      instructions.textContent = `Starting on Level ${level} — ${t.label}. Hold Space / Enter to rise, release to fall`;
+      drawFrame();
+      animId = requestAnimationFrame(tick);
+    }
+
     // --- Start ---
     function startGame() {
       if (animId) cancelAnimationFrame(animId);
-      running  = true;
-      level    = 1;
+      cancelCountdown();
+
+      // Setup state immediately (so you can see the level/obstacles during countdown)
+      level    = getSelectedStartLevel();
       playerX  = 0; playerY  = H / 2;
       prevX    = 0; prevY    = H / 2;
       playerVY = 0;
+
       clearTrail();
       placeObstacles(level);
       updateLevelLabel();
-      instructions.textContent = 'Hold Space / Enter to rise, release to fall';
-      startBtn.disabled = true;
       drawFrame();
-      animId = requestAnimationFrame(tick);
+
+      startBtn.disabled = true;
+      startDifficulty.disabled = true;
+      countdownEnabledEl.disabled = true;
+
+      if (!isCountdownEnabled()) {
+        beginRun();
+        return;
+      }
+
+      // Countdown: 3..2..1..GO (start on GO transition)
+      starting = true;
+      let n = 3;
+      showCountdown(n);
+      instructions.textContent = 'Get ready...';
+
+      countdownTimer = setInterval(() => {
+        n--;
+        if (n > 0) {
+          showCountdown(n);
+          return;
+        }
+
+        // brief "GO" flash then start
+        showCountdown('GO');
+        clearInterval(countdownTimer);
+        countdownTimer = null;
+        setTimeout(() => {
+          if (!starting) return; // cancelled
+          beginRun();
+        }, 300);
+      }, 1000);
     }
 
     // --- Input ---
