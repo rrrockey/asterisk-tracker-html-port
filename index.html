@@ -118,6 +118,19 @@
     #countdownToggle input {
       transform: translateY(1px);
     }
+    #muteBtn {
+      padding: 8px 12px;
+      font-size: 13px;
+      font-family: 'Courier New', Courier, monospace;
+      background: #111;
+      color: #bbb;
+      border: 1px solid #555;
+      border-radius: 4px;
+      cursor: pointer;
+      user-select: none;
+    }
+    #muteBtn:hover { border-color: #aaa; color: #fff; }
+    #muteBtn.muted { color: #555; border-color: #333; }
   </style>
 </head>
 <body>
@@ -147,9 +160,64 @@
     </label>
 
     <button id="startBtn">Start Game</button>
+    <button id="muteBtn" title="Toggle sound effects">SFX: ON</button>
   </div>
 
   <script>
+    // --- Sound ---
+    let audioCtx = null;
+    let sfxMuted = false;
+    const muteBtn = document.getElementById('muteBtn');
+
+    function getAudioCtx() {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      return audioCtx;
+    }
+
+    function playLevelUp() {
+      if (sfxMuted) return;
+      const ctx = getAudioCtx();
+      // Ascending arpeggio: root, major third, fifth, octave
+      [0, 4, 7, 12].forEach((semitone, i) => {
+        const freq = 330 * Math.pow(2, semitone / 12);
+        const osc  = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.type = 'square';
+        osc.frequency.value = freq;
+        const t = ctx.currentTime + i * 0.08;
+        gain.gain.setValueAtTime(0.12, t);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
+        osc.start(t);
+        osc.stop(t + 0.18);
+      });
+    }
+
+    function playGameOver() {
+      if (sfxMuted) return;
+      const ctx = getAudioCtx();
+      // Descending sawtooth slide
+      const osc  = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(380, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(60, ctx.currentTime + 0.55);
+      gain.gain.setValueAtTime(0.18, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.55);
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + 0.6);
+    }
+
+    muteBtn.addEventListener('click', () => {
+      sfxMuted = !sfxMuted;
+      muteBtn.textContent = sfxMuted ? 'SFX: OFF' : 'SFX: ON';
+      muteBtn.classList.toggle('muted', sfxMuted);
+    });
+
     const trailCanvas = document.getElementById('trailCanvas');
     const tc = trailCanvas.getContext('2d');
     const gameCanvas  = document.getElementById('gameCanvas');
@@ -356,6 +424,7 @@
     // --- Level up ---
     function nextLevel() {
       level++;
+      playLevelUp();
       updateLevelLabel();
       dimTrail();
       prevX = 0; prevY = playerY;
@@ -371,6 +440,7 @@
     // --- Game over ---
     function gameOver() {
       running = false;
+      playGameOver();
       cancelCountdown();
       startBtn.disabled = false;
       startDifficulty.disabled = false;
